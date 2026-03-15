@@ -1,0 +1,290 @@
+---
+title: "Gut Microbiome in Parkinson's Disease (PD) vs Healthy Controls (HC)"
+author: "Catarina A Bettencourt"
+date: "March 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+  pdf_document:
+    toc: true
+subtitle: Pilot analysis, not intended for research or clinical use
+---
+
+# Data Summary
+
+All data used in this project comes from the following library:
+Pasolli E, Schiffer L, Manghi P, Renson A, Obenchain V, Truong D, Beghini F, Malik F, Ramos M, Dowd J, Huttenhower C, Morgan M, Segata N, Waldron L (2017). “Accessible, curated metagenomic data through ExperimentHub.” Nat. Methods, 14(11), 1023–1024. ISSN 1548-7091, 1548-7105, doi:10.1038/nmeth.4468. 
+
+The R script and sample data and results used in this file can be found at https://github.com/bettencourt-c/-microbiome-pilot-analysis.
+
+```{r setup, message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(phyloseq)
+  library(vegan)
+  library(ggplot2)
+  library(cowplot)
+  library(knitr)
+  library(kableExtra)
+})
+
+FOLDER_PATH <- "20260301_PD_stool_no-abx_sex-All_BMIrange-0-Inf_minreads-0"
+config <- readRDS(file.path(FOLDER_PATH, "data", "config.rds"))
+meta_combined <- readRDS(file.path(FOLDER_PATH, "data", "meta_combined.rds"))
+```
+
+```{r load_ps}
+ps_rel_a  <- readRDS(file.path(FOLDER_PATH, "data", "relative_abundance_ps.rds"))
+ps_path_a <- readRDS(file.path(FOLDER_PATH, "data", "pathway_abundance_ps.rds"))
+ps_path_c <- readRDS(file.path(FOLDER_PATH, "data", "pathway_coverage_ps.rds"))
+```
+
+```{r load_rel_a}
+rel_div  <- file.path(FOLDER_PATH, "plots", "relative_abundance_combined-diversity.png")
+rel_top5       <- file.path(FOLDER_PATH, "plots", "relative_abundance_genus_top-5-Genus.png")
+rel_permanova  <- read.csv(file.path(FOLDER_PATH, "results", "relative_abundance_permanova.csv"))
+rel_betadisp   <- read.csv(file.path(FOLDER_PATH, "results", "relative_abundance_betadisper.csv"))
+rel_wilcox     <- read.csv(file.path(FOLDER_PATH, "results", "relative_abundance_genus_wilcox_genus.csv"))
+rel_direction  <- read.csv(file.path(FOLDER_PATH, "results", "relative_abundance_genus_direction_table.csv"))
+```
+
+```{r load_path_a}
+path_a_permanova <- read.csv(file.path(FOLDER_PATH, "results", "pathway_abundance_permanova.csv"))
+path_a_betadisp  <- read.csv(file.path(FOLDER_PATH, "results", "pathway_abundance_betadisper.csv"))
+path_a_wilcox    <- read.csv(file.path(FOLDER_PATH, "results", "pathway_abundance_wilcox_feature.csv"))
+path_a_direction <- read.csv(file.path(FOLDER_PATH, "results", "pathway_abundance_direction_table.csv"))
+path_a_div       <- file.path(FOLDER_PATH, "plots", "pathway_abundance_combined-diversity.png")
+path_a_top5      <- file.path(FOLDER_PATH, "plots", "pathway_abundance_top-5-Feature.png")
+```
+
+```{r pathway_coverage}
+path_c_permanova <- read.csv(file.path(FOLDER_PATH, "results", "pathway_coverage_permanova.csv"))
+path_c_betadisp  <- read.csv(file.path(FOLDER_PATH, "results", "pathway_coverage_betadisper.csv"))
+path_c_wilcox    <- read.csv(file.path(FOLDER_PATH, "results", "pathway_coverage_wilcox_feature.csv"))
+path_c_direction <- read.csv(file.path(FOLDER_PATH, "results", "pathway_coverage_direction_table.csv"))
+path_c_div       <- file.path(FOLDER_PATH, "plots", "pathway_coverage_beta-diversity.png")
+path_c_top5      <- file.path(FOLDER_PATH, "plots", "pathway_coverage_top-5-Feature.png")
+```
+
+The following parameters were selected. Using the available age range of the PD cohort, age-matched controls were selected. The size of the PD cohort was limited, and reduces the power of these results. I decided to continue with this limited cohort since the goal of this analysis was to test improve my R coding skills within the context of microbiome analysis. To balance the sample size between the limited PD cohort and extensive HC cohort, 23 HC samples were randomly selected. Participants taking antibiotics were excluded. Although not used in this analysis given the already limited sample, the R script is built to filter the cohort further based on gender, minimum sequencing read length, and BMI range. Additional parameters can be added to the script with minimal changes. Users can also select the type of sample data they wish to analyze. Currently, users cannot analyze gene families because my computer is not capable of handling the memory and disk requirements. I plan to continue troubleshooting ways to reduce computing power, as I am personally very interested in seeing how the gene families differ between cohort microbiomes.
+
+```{r show_parameters, fig.align='center'}
+as.data.frame(t(sapply(config, function(x) paste(x, collapse = ", ")))) %>%
+  pivot_longer(everything(), names_to = "Parameter", values_to = "Value") %>%
+  knitr::kable(caption = "Analysis Parameters", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+Summary statistics for both cohorts are available below.
+
+```{r show_cohort_summary, fig.align='center'}
+meta_combined %>%
+  group_by(disease) %>%
+  summarize(
+    N        = n(),
+    Age      = paste0(round(mean(age, na.rm = TRUE), 1), " ± ", round(sd(age, na.rm = TRUE), 1)),
+    BMI      = paste0(round(mean(BMI, na.rm = TRUE), 1), " ± ", round(sd(BMI, na.rm = TRUE), 1)),
+    Male     = paste0(sum(gender == "male", na.rm = TRUE), " (", round(mean(gender == "male", na.rm = TRUE) * 100), "%)"),
+    .groups  = "drop"
+  ) %>%
+  knitr::kable(caption = "Cohort Demographics", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+
+
+# Relative Abundance Overview
+
+Figure A displays that alpha diversity did not differ significantly between PD and HC groups, as determined by Wilcox rank test. This was selected over a t-test since microbiome data typically does not pass normality test. Figure B presents the between-group differences of the PD and HC cohorts.
+
+```{r rel_a_div, fig.align='center'}
+knitr::include_graphics(rel_div)
+```
+
+Gut microbiome composition differed significantly between PD and healthy controls (PERMANOVA: R² = `r round(rel_permanova[1, "R2"], 3)`, p = `r rel_permanova[1, "Pr..F."]`), with no significant difference in group dispersion (betadisper: p = `r rel_betadisp[1, "Pr..F."]`), confirming the result reflects true compositional differences rather than differences in within-group variability.
+
+```{r rel_a_perma, fig.align='center'}
+rel_permanova %>%
+  knitr::kable(caption = "Relative Abundance PERMANOVA Results", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+```{r rel_a_betadisp, fig.align='center'}
+rel_betadisp %>%
+  knitr::kable(caption = "Multivariate Homogeneity of Groups Dispersions in Relative Abundance", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+The top five genera from each cohort is evaluated. When a genus is present in the top five for both cohorts, it is only listed once.
+
+```{r rel_a_top5, fig.align='center'}
+knitr::include_graphics(rel_top5)
+```
+
+The remaining table uses the results from the Wilcoxon rank-sum test with FDR Correction, but adds directionality to the differences between cohorts. 
+
+```{r rel_a_direction, fig.align='center'}
+rel_direction %>%
+  knitr::kable(caption = "Directional Change of Relative Abundance (Genus)", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+# Pathway Abundance Overview
+
+Pathway abundance represents the predicted metabolic activity of the microbiome, quantified as reads per kilobase (RPK). Significant differences in pathway abundance between groups suggest altered functional capacity, independent of which taxa are present. As with relative abundance, PERMANOVA was used to assess between-group compositional differences, with betadisper confirming result validity.
+
+Gut microbiome functional capacity differed significantly between PD and healthy controls (PERMANOVA: R² = `r round(path_a_permanova[1, "R2"], 3)`, p = `r path_a_permanova[1, "Pr..F."]`), with no significant difference in group dispersion (betadisper: p = `r path_a_betadisp[1, "Pr..F."]`), confirming the result reflects true compositional differences rather than differences in within-group variability.
+
+
+```{r path_a_div, fig.align='center'}
+knitr::include_graphics(path_a_div)
+```
+
+```{r path_a_perma, fig.align='center'}
+path_a_permanova %>%
+  knitr::kable(caption = "Pathway Abundance PERMANOVA Results", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+```{r path_a_betadisp, fig.align='center'}
+path_a_betadisp %>%
+  knitr::kable(caption = "Multivariate Homogeneity of Groups Dispersions in Pathway Abundance", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+The top five pathways per cohort are shown below. Unknown and unintegrated pathways were not filtered prior to this analysis and may dominate the top features. Future iterations of this pipeline will include a filtering step to focus on annotated pathways.
+
+```{r path_a_top5, fig.align='center'}
+knitr::include_graphics(path_a_top5)
+```
+
+
+```{r path_a_direction, fig.align='center'}
+path_a_direction %>%
+  knitr::kable(caption = "Directional Change of Pathway Abundance", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+# Pathway Coverage Overview
+
+Pathway coverage represents the proportion of a pathway's component reactions detected in a sample, ranging from 0 to 1. Unlike pathway abundance which reflects expression level, coverage indicates whether a pathway is structurally present at all. Alpha diversity is not applicable to coverage data given its bounded nature, so only beta diversity is assessed here.
+
+Pathway coverage composition differed between groups (PERMANOVA: R² = `r round(path_c_permanova[1, "R2"], 3)`, p = `r path_c_permanova[1, "Pr..F."]`), with no significant difference in group dispersion (betadisper: p = `r path_c_betadisp[1, "Pr..F."]`), confirming the result reflects true compositional differences.
+
+
+```{r path_c_div, fig.align='center'}
+knitr::include_graphics(path_c_div)
+```
+
+```{r path_c_perma, fig.align='center'}
+path_c_permanova %>%
+  knitr::kable(caption = "Pathway Coverage PERMANOVA Results", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+```{r path_c_betadisp, fig.align='center'}
+path_c_betadisp %>%
+  knitr::kable(caption = "Multivariate Homogeneity of Groups Dispersions in Pathway Coverage", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+The top five pathways per cohort are shown below. Unknown and unintegrated pathways were not filtered prior to this analysis and may dominate the top features. Future iterations of this pipeline will include a filtering step to focus on annotated pathways.
+
+```{r path_c_top5, fig.align='center'}
+knitr::include_graphics(path_c_top5)
+```
+
+
+```{r path_c_direction, fig.align='center'}
+path_c_direction %>%
+  knitr::kable(caption = "Directional Change of Pathway Coverage", booktabs = TRUE) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width        = FALSE,
+    position          = "left",
+    font_size         = 14
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4E6478") %>%
+  column_spec(1, bold = TRUE)
+```
+
+## Final Thoughts
+
+Although it is promising to see statistically significant results in this analysis, it should be noted that without a review from a researcher with experience in host-microbiome analytics, the results drawn from this pilot project should be taken with a grain of salt. My current lab does not work with any form of microbiology, so the basis for each statistical analysis is based off of my understanding of the current literature. 
+
+There are multiple limitations in this study, first being the sample size. Given the complexity and volatility of microbial community composition, there are many additional factors that must be accounted for, such as sequencing read length, diet, activity level, probiotic use, and severity of PD. There are also variations in sequencing techniques and sample collection that are not accounted for in this analysis. Pre-processing steps of the data source are also a source of limitation. The Shannon diversity estimates presented in this project should be interpreted with caution, as the curatedMetagenomicData relative abundance values have been pre-processed and normalized, removing singletons from the data. While the between-group comparison remains valid, absolute diversity values may be underestimated relative to studies using raw count data.
+
+Future analysis would include a multiple linear regression including but not limited to factors such as age, gender, and UPDRS score. Unknown and unintegrated values would also be filtered out for secondary analysis of known pathways. Additionally, I would be interested in evaluating whether a composite bacterial health score can be determined following analysis of the entire healthy control cohort. This composite score would ideally include the bacterial genera, gene families, and pathway information. 
